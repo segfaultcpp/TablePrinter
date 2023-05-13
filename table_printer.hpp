@@ -1,6 +1,6 @@
 #pragma once
 #include <array>
-#include <vector>
+#include <compare>
 #include <concepts>
 #include <string_view>
 #include <string>
@@ -10,153 +10,233 @@
 #include <format>
 #include <algorithm>
 #include <numeric>
+#include <iostream>
+#include <cstdint>
 
-template<typename T>
-struct GetProjType;
+namespace tp {
+	namespace detail {
+		template<typename T>
+		struct GetProjType;
 
-template<typename Class, typename T>
-struct GetProjType<T Class::*> {
-	using Type = T;
-};
+		template<typename Class, typename T>
+		struct GetProjType<T Class::*> {
+			using Type = T;
+		};
 
-template<typename T, typename... FieldTypes>
-	requires (requires { typename GetProjType<FieldTypes>::Type; } && ...)
-struct TablePrinter {
-	std::span<T> table;
-	static constexpr std::size_t field_count = sizeof...(FieldTypes);
-	static constexpr std::array field_names = { GetProjType<FieldTypes>::Type::field_name... };
-	std::tuple<FieldTypes...> fields;
+		template<typename T>
+		concept IsProj = requires {
+			typename GetProjType<T>::Type;
+		};
+	}
 
-	TablePrinter(std::span<T> v, FieldTypes... f) noexcept 
-		: table{ v }
-		, fields{ std::make_tuple(f...) }
-	{}
+	struct TablePrinterDesc {
+		char horizontal_sep = '=';
+		char vertical_sep = '|';
+		bool paddings = true;
 
-	void print_all() noexcept {
-		auto field_widths = [this]<std::size_t... I>(std::index_sequence<I...>) {
-			std::vector<std::size_t> ret = {
-				(std::invoke(std::get<I>(this->fields), std::ranges::max(this->table, {}, std::get<I>(this->fields))).get_width() + 2)...
-			};
-			return ret;
-		}(std::make_index_sequence<field_count>{});
+		constexpr TablePrinterDesc() noexcept = default;
 
-		for (std::size_t i : std::views::iota(0u, field_count)) {
-			if ((field_widths[i] - 2) < field_names[i].size()) {
-				field_widths[i] = field_names[i].size() + 2;
-			}
+		constexpr TablePrinterDesc(char hor, char vert, bool pad) noexcept
+			: horizontal_sep{ hor }
+			, vertical_sep{ vert }
+			, paddings{ pad }
+		{}
+
+		constexpr TablePrinterDesc with_separators(char hor, char vert) const noexcept {
+			return TablePrinterDesc{ hor, vert, paddings };
 		}
 
-		auto table_width = std::accumulate(field_widths.begin(), field_widths.end(), static_cast<std::size_t>(field_count + 1));
-
-		print_separator_(table_width);
-		
-		for (std::size_t i : std::views::iota(0u, field_count)) {
-			std::cout << std::format("| {:^{}} ", field_names[i], field_widths[i] - 2);
+		constexpr TablePrinterDesc use_paddings(bool use) const noexcept {
+			return TablePrinterDesc{ horizontal_sep, vertical_sep, use };
 		}
-		std::cout << "|\n";
+	};
 
-		print_separator_(table_width);
+	template<typename T, typename... FieldTypes>
+		requires (detail::IsProj<FieldTypes> && ...)
+	struct TablePrinter {
+		static constexpr std::size_t field_count = sizeof...(FieldTypes);
+		static constexpr std::array field_names = { detail::GetProjType<FieldTypes>::Type::field_name... };
+	
+	private:
+		std::span<T> table_;
+		std::tuple<FieldTypes...> fields_;
+		TablePrinterDesc desc_;
+	
+	public:
+		TablePrinter(std::span<T> v, FieldTypes... f) noexcept 
+			: table_{ v }
+			, fields_{ std::make_tuple(f...) }
+			, desc_{}
+		{}
 
-		for (auto& el : table) {
-			print_padding_(field_widths);
+		TablePrinter(TablePrinterDesc desc, std::span<T> v, FieldTypes... f) noexcept 
+			: table_{ v }
+			, fields_{ std::make_tuple(f...) }
+			, desc_{ desc }
+		{}
 
-			[this, &el, &field_widths] <std::size_t... I>(std::index_sequence<I...>) {
-				((std::cout << std::format("| {:^{}} ", std::invoke(std::get<I>(this->fields), el).value, field_widths[I] - 2)), ...);
+		void print_all() const noexcept {
+			static auto field_widths = [this]<std::size_t... I>(std::index_sequence<I...>) {
+				std::array<std::size_t, field_count> ret = {
+					(std::invoke(std::get<I>(fields_), std::ranges::max(table_, {}, std::get<I>(fields_))).get_width() + 2)...
+				};
+				return ret;
 			}(std::make_index_sequence<field_count>{});
-			std::cout << "|\n";
 
-			print_padding_(field_widths);
+			for (std::size_t i : std::views::iota(0u, field_count)) {
+				if ((field_widths[i] - 2) < field_names[i].size()) {
+					field_widths[i] = field_names[i].size() + 2;
+				}
+			}
+
+			auto table_width = std::accumulate(field_widths.begin(), field_widths.end(), static_cast<std::size_t>(field_count + 1));
 
 			print_separator_(table_width);
-		}
-	}
+			
+			for (std::size_t i : std::views::iota(0u, field_count)) {
+				std::cout << std::format("{} {:^{}} ", desc_.vertical_sep, field_names[i], field_widths[i] - 2);
+			}
+			std::cout << desc_.vertical_sep << "\n";
 
-private:
-	void print_padding_(std::span<std::size_t> field_widths) noexcept {
-		for (std::size_t w : field_widths) {
-			std::cout << "|";
+			print_separator_(table_width);
 
-			for (std::size_t i : std::views::iota(0u, w)) {
-				std::cout << " ";
+			for (auto& el : table_) {
+				print_padding_(field_widths);
+
+				[this, &el] <std::size_t... I>(std::index_sequence<I...>) {
+					((std::cout << std::format("{} {:^{}} ", desc_.vertical_sep, std::invoke(std::get<I>(fields_), el).value, field_widths[I] - 2)), ...);
+				}(std::make_index_sequence<field_count>{});
+				std::cout << desc_.vertical_sep << "\n";
+
+				print_padding_(field_widths);
+
+				print_separator_(table_width);
 			}
 		}
-		std::cout << "|\n";
-	}
 
-	void print_separator_(std::size_t table_width) noexcept {
-		for (std::size_t i : std::views::iota(0u, table_width)) {
-			std::cout << "=";
+	private:
+		void print_padding_(std::span<std::size_t> field_widths) const noexcept {
+			if (desc_.paddings) {
+				for (std::size_t w : field_widths) {
+					std::cout << desc_.vertical_sep;
+
+					for (std::size_t i : std::views::iota(0u, w)) {
+						std::cout << " ";
+					}
+				}
+				std::cout << desc_.vertical_sep << "\n";
+			}
 		}
-		std::cout << "\n";
-	}
 
-};
+		void print_separator_(std::size_t table_width) const noexcept {
+			for (std::size_t i : std::views::iota(0u, table_width)) {
+				std::cout << desc_.horizontal_sep;
+			}
+			std::cout << "\n";
+		}
 
-template<typename T, typename... FieldTypes>
-TablePrinter(std::vector<T>, FieldTypes...) -> TablePrinter<T, FieldTypes...>;
+	};
 
-struct StringField {
-	std::string value;
+	template<template<typename, typename...> typename C, typename T, typename... FieldTypes>
+	TablePrinter(C<T>, FieldTypes...) -> TablePrinter<T, FieldTypes...>;
 
-	StringField() = default;
+	template<template<typename, typename...> typename C, typename T, typename... FieldTypes>
+	TablePrinter(TablePrinterDesc, C<T>, FieldTypes...) -> TablePrinter<T, FieldTypes...>;
 
-	StringField(const char* str)
-		: value{ str }
-	{}
+	struct FieldTag {
+		auto operator<=>(const FieldTag&) const noexcept = default;
+	};
 
-	StringField& operator=(const char* str) {
-		value = str;
-		return *this;
-	}
+	template<typename T>
+	concept FieldType = std::derived_from<T, FieldTag>;
 
-	StringField(std::string str)
-		: value{ std::move(str) }
-	{}
+	struct StringField : FieldTag {
+		std::string value;
 
-	StringField& operator=(std::string str) {
-		value = std::move(str);
-		return *this;
-	}
+		StringField() noexcept = default;
 
-	StringField(const StringField&) = default;
-	StringField& operator=(const StringField&) = default;
+		StringField(const char* str) noexcept
+			: value{ str }
+		{}
 
-	StringField(StringField&&) = default;
-	StringField& operator=(StringField&&) = default;
+		StringField& operator=(const char* str) noexcept {
+			value = str;
+			return *this;
+		}
 
-	std::size_t get_width() const noexcept {
-		return value.size();
-	}
+		StringField(std::string str) noexcept
+			: value{ std::move(str) }
+		{}
 
-	// it must be defined to satisfy constraints
-	auto operator<=>(const StringField&) const noexcept = default;
+		StringField& operator=(std::string str) noexcept {
+			value = std::move(str);
+			return *this;
+		}
 
-	bool operator>(const StringField& rhs) const noexcept {
-		return value.size() > rhs.value.size();
-	}
+		StringField(const StringField&) noexcept = default;
+		StringField& operator=(const StringField&) noexcept = default;
 
-	bool operator<(const StringField& rhs) const noexcept {
-		return value.size() < rhs.value.size();
-	}
-};
+		StringField(StringField&&) noexcept = default;
+		StringField& operator=(StringField&&) noexcept = default;
 
-struct UsizeField {
-	std::size_t value;
+		std::size_t get_width() const noexcept {
+			return value.size();
+		}
 
-	UsizeField() = default;
+		// it must be defined to satisfy constraints
+		auto operator<=>(const StringField&) const noexcept = default;
 
-	UsizeField(std::size_t v)
-		: value{ v }
-	{}
+		bool operator>(const StringField& rhs) const noexcept {
+			return value.size() > rhs.value.size();
+		}
 
-	UsizeField& operator=(std::size_t v) {
-		value = v;
-		return *this;
-	}
+		bool operator<(const StringField& rhs) const noexcept {
+			return value.size() < rhs.value.size();
+		}
+	};
 
-	std::size_t get_width() const noexcept {
-		return 10u;
-	}
+	template<typename T> requires std::integral<T> || std::floating_point<T>
+	struct NumberField : FieldTag {
+		T value;
 
-	auto operator<=>(const UsizeField&) const noexcept = default;
-};
+		NumberField() noexcept = default;
+
+		NumberField(T v) noexcept
+			: value{ v }
+		{}
+
+		NumberField& operator=(T v) noexcept {
+			value = v;
+			return *this;
+		}
+
+		T get_width() const noexcept {
+			return 10u;
+		}
+
+		auto operator<=>(const NumberField&) const noexcept = default;
+	};
+
+	using U8Field = NumberField<std::uint8_t>;
+	using U16Field = NumberField<std::uint16_t>;
+	using U32Field = NumberField<std::uint32_t>;
+	using U64Field = NumberField<std::uint64_t>;
+
+	using I8Field = NumberField<std::int8_t>;
+	using I16Field = NumberField<std::int16_t>;
+	using I32Field = NumberField<std::int32_t>;
+	using I64Field = NumberField<std::int64_t>;
+
+	using UsizeField = NumberField<std::size_t>;
+
+	using F32Field = NumberField<float>;
+	using F64Field = NumberField<double>;
+}
+
+#define DECLARE_FIELD(Type, Name, Desc) \
+	static_assert(::tp::FieldType<Type>); \
+	static_assert(::std::constructible_from<::std::string_view, decltype(Desc)>); \
+	struct Name##Field : Type { \
+		static constexpr ::std::string_view field_name = Desc; \
+	}; \
+	Name##Field Name;

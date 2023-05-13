@@ -1,32 +1,31 @@
 #include "table_printer.hpp"
 
-struct NameField : StringField {
-	static constexpr std::string_view field_name = "Name";
-};
+#include <vector>
 
-struct DescField : StringField {
-	static constexpr std::string_view field_name = "Descriptoin";
-};
-
-struct CountField : UsizeField {
-	static constexpr std::string_view field_name = "Count";
-};
-
-struct Object {
-	NameField name;
-	DescField desc;
-	CountField count;
+struct Gpu {
+	DECLARE_FIELD(tp::StringField, Vendor, "Vendor");
+	DECLARE_FIELD(tp::StringField, Model, "Model");
+	DECLARE_FIELD(tp::UsizeField, VRamSize, "VRAM Size (GB)");
 };
 
 int main() {
 	std::vector v = {
-		Object{ "Some object", "We know next to nothing about it", 20},
-		Object{ "Some object 2", "Some object 2 idk what write else here", 30},
+		Gpu{ "NVIDIA", "GTX 1660 TI", 6 },
+		Gpu{ "NVIDIA", "RTX 2070", 8 },
+		Gpu{ "AMD", "Radeon RX 580", 0 },
 	};
 
-	TablePrinter tp{ v, &Object::name, &Object::count, &Object::desc };
-
-	tp.print_all();
-
+	{	
+		tp::TablePrinter printer{ v, &Gpu::Vendor, &Gpu::Model, &Gpu::VRamSize };
+		printer.print_all();
+	}
+	std::cout << "\n";
+	{
+		static constexpr auto desc = tp::TablePrinterDesc{}
+			.with_separators('+', '-')
+			.use_paddings(false);
+		tp::TablePrinter printer{ desc, v, &Gpu::Vendor, &Gpu::Model, &Gpu::VRamSize };
+		printer.print_all();
+	}
 	return 0;
 }
