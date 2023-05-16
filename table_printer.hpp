@@ -11,9 +11,109 @@
 #include <algorithm>
 #include <numeric>
 #include <iostream>
+#include <fstream>
 #include <cstdint>
+#include <type_traits>
 
 namespace tp {
+		struct FieldTag {
+		auto operator<=>(const FieldTag&) const noexcept = default;
+	};
+
+	template<typename T>
+	concept FieldType = std::derived_from<T, FieldTag>;
+
+	struct StringField : FieldTag {
+		std::string value;
+
+		StringField() noexcept = default;
+
+		StringField(const char* str) noexcept
+			: value{ str }
+		{}
+
+		StringField& operator=(const char* str) noexcept {
+			value = str;
+			return *this;
+		}
+
+		StringField(std::string str) noexcept
+			: value{ std::move(str) }
+		{}
+
+		StringField& operator=(std::string str) noexcept {
+			value = std::move(str);
+			return *this;
+		}
+
+		StringField(const StringField&) noexcept = default;
+		StringField& operator=(const StringField&) noexcept = default;
+
+		StringField(StringField&&) noexcept = default;
+		StringField& operator=(StringField&&) noexcept = default;
+
+		std::size_t get_width() const noexcept {
+			return value.size();
+		}
+
+		// it must be defined to satisfy constraints
+		auto operator<=>(const StringField&) const noexcept = default;
+
+		bool operator>(const StringField& rhs) const noexcept {
+			return value.size() > rhs.value.size();
+		}
+
+		bool operator<(const StringField& rhs) const noexcept {
+			return value.size() < rhs.value.size();
+		}
+	};
+
+	template<typename T> requires std::integral<T> || std::floating_point<T>
+	struct NumberField : FieldTag {
+		T value;
+
+		NumberField() noexcept = default;
+
+		NumberField(T v) noexcept
+			: value{ v }
+		{}
+
+		NumberField& operator=(T v) noexcept {
+			value = v;
+			return *this;
+		}
+
+		T get_width() const noexcept {
+			return 10u;
+		}
+
+		auto operator<=>(const NumberField&) const noexcept = default;
+	};
+
+	using U8Field = NumberField<std::uint8_t>;
+	using U16Field = NumberField<std::uint16_t>;
+	using U32Field = NumberField<std::uint32_t>;
+	using U64Field = NumberField<std::uint64_t>;
+
+	using I8Field = NumberField<std::int8_t>;
+	using I16Field = NumberField<std::int16_t>;
+	using I32Field = NumberField<std::int32_t>;
+	using I64Field = NumberField<std::int64_t>;
+
+	using UsizeField = NumberField<std::size_t>;
+
+	using F32Field = NumberField<float>;
+	using F64Field = NumberField<double>;
+
+	template<typename T>
+	inline constexpr bool is_number_field = false;
+
+	template<typename T>
+	inline constexpr bool is_number_field<NumberField<T>> = true;
+
+	template<typename T>
+	concept IsNumberField = is_number_field<T>;
+
 	namespace detail {
 		template<typename T>
 		struct GetProjType;
@@ -114,6 +214,58 @@ namespace tp {
 			}
 		}
 
+		void print_all(std::ofstream& fout) const noexcept {
+			static constexpr std::string_view head = 
+R"str(<?xml version="1.0"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+xmlns:o="urn:schemas-microsoft-com:office:office"
+xmlns:x="urn:schemas-microsoft-com:office:excel"
+xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+xmlns:html="http://www.w3.org/TR/REC-html40">
+<Worksheet ss:Name="Sheet1">
+)str";
+			
+			static constexpr std::string_view ending = 
+R"str(</Table>
+</Worksheet>
+</Workbook>)str";
+
+			std::string xml = head.data();
+			xml += std::format("<Table ss:ExpandedColumnCount=\"{}\" ss:ExpandedRowCount=\"{}\" x:FullColumns=\"1\" x:FullRows=\"1\">\n", field_count, table_.size() + 1);
+		
+			xml += "<Row>\n";
+			for (auto name : field_names) {
+				xml += std::format("<Cell><Data ss:Type=\"String\">{}</Data></Cell>\n", name);
+			}
+			xml += "</Row>\n";
+
+			auto accessor = [&xml](auto&& el) noexcept {
+				using Type = std::remove_reference_t<decltype(el)>;
+				static constexpr std::string_view type_name = [] {
+					if constexpr (std::is_base_of_v<StringField, Type>) {
+						return "String";
+					}
+					else if constexpr (IsNumberField<Type>) { // TODO:
+						return "Number";
+					}
+					return "String";
+				}();
+
+				xml += std::format("<Cell><Data ss:Type=\"{}\">{}</Data></Cell>\n", type_name, el.value);
+			};
+
+			for (auto el : table_) {
+				xml += "<Row>\n";
+				[this, &el, &accessor] <std::size_t... I>(std::index_sequence<I...>) {
+					(accessor(std::invoke(std::get<I>(fields_), el)), ...);
+				}(std::make_index_sequence<field_count>{});
+				xml += "</Row>\n";
+			}
+
+			xml += ending;
+			fout << xml;
+		}
+
 	private:
 		void print_padding_(std::span<std::size_t> field_widths) const noexcept {
 			if (desc_.paddings) {
@@ -142,95 +294,6 @@ namespace tp {
 
 	template<template<typename, typename...> typename C, typename T, typename... FieldTypes>
 	TablePrinter(TablePrinterDesc, C<T>, FieldTypes...) -> TablePrinter<T, FieldTypes...>;
-
-	struct FieldTag {
-		auto operator<=>(const FieldTag&) const noexcept = default;
-	};
-
-	template<typename T>
-	concept FieldType = std::derived_from<T, FieldTag>;
-
-	struct StringField : FieldTag {
-		std::string value;
-
-		StringField() noexcept = default;
-
-		StringField(const char* str) noexcept
-			: value{ str }
-		{}
-
-		StringField& operator=(const char* str) noexcept {
-			value = str;
-			return *this;
-		}
-
-		StringField(std::string str) noexcept
-			: value{ std::move(str) }
-		{}
-
-		StringField& operator=(std::string str) noexcept {
-			value = std::move(str);
-			return *this;
-		}
-
-		StringField(const StringField&) noexcept = default;
-		StringField& operator=(const StringField&) noexcept = default;
-
-		StringField(StringField&&) noexcept = default;
-		StringField& operator=(StringField&&) noexcept = default;
-
-		std::size_t get_width() const noexcept {
-			return value.size();
-		}
-
-		// it must be defined to satisfy constraints
-		auto operator<=>(const StringField&) const noexcept = default;
-
-		bool operator>(const StringField& rhs) const noexcept {
-			return value.size() > rhs.value.size();
-		}
-
-		bool operator<(const StringField& rhs) const noexcept {
-			return value.size() < rhs.value.size();
-		}
-	};
-
-	template<typename T> requires std::integral<T> || std::floating_point<T>
-	struct NumberField : FieldTag {
-		T value;
-
-		NumberField() noexcept = default;
-
-		NumberField(T v) noexcept
-			: value{ v }
-		{}
-
-		NumberField& operator=(T v) noexcept {
-			value = v;
-			return *this;
-		}
-
-		T get_width() const noexcept {
-			return 10u;
-		}
-
-		auto operator<=>(const NumberField&) const noexcept = default;
-	};
-
-	using U8Field = NumberField<std::uint8_t>;
-	using U16Field = NumberField<std::uint16_t>;
-	using U32Field = NumberField<std::uint32_t>;
-	using U64Field = NumberField<std::uint64_t>;
-
-	using I8Field = NumberField<std::int8_t>;
-	using I16Field = NumberField<std::int16_t>;
-	using I32Field = NumberField<std::int32_t>;
-	using I64Field = NumberField<std::int64_t>;
-
-	using UsizeField = NumberField<std::size_t>;
-
-	using F32Field = NumberField<float>;
-	using F64Field = NumberField<double>;
 }
 
 #define DECLARE_FIELD(Type, Name, Desc) \
